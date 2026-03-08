@@ -7,6 +7,46 @@ from torch import nn
 from clip import clip
 from utils.layers import GraphConvolution, DistanceAdj
 
+
+class SemanticCalibration(nn.Module):
+    """Lightweight score calibration module."""
+
+    def __init__(self, mode="identity", temperature=1.0):
+        super().__init__()
+        self.mode = mode
+        self.temperature = temperature
+
+    def forward(self, score):
+        if self.mode == "temperature":
+            return score / max(self.temperature, 1e-6)
+        return score
+
+
+class TemporalRescorer(nn.Module):
+    """Lightweight temporal score post-processing module."""
+
+    def __init__(self, mode="identity", alpha=0.7, kernel_size=3):
+        super().__init__()
+        self.mode = mode
+        self.alpha = alpha
+
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        self.kernel_size = kernel_size
+        self.padding = kernel_size // 2
+        self.conv = nn.Conv1d(1, 1, kernel_size=kernel_size, padding=self.padding, bias=False)
+        nn.init.constant_(self.conv.weight, 1.0 / kernel_size)
+
+    def forward(self, score_seq):
+        if self.mode == "ema":
+            output = score_seq.clone()
+            for i in range(1, output.shape[1]):
+                output[:, i] = self.alpha * output[:, i - 1] + (1 - self.alpha) * output[:, i]
+            return output
+        if self.mode == "conv1d":
+            return self.conv(score_seq.unsqueeze(1)).squeeze(1)
+        return score_seq
+
 class LayerNorm(nn.LayerNorm):
 
     def forward(self, x: torch.Tensor):
@@ -68,6 +108,14 @@ class CLIPVAD(nn.Module):
                  attn_window: int,
                  prompt_prefix: int,
                  prompt_postfix: int,
+                 score_source: str,
+                 use_semantic_calib: bool,
+                 semantic_calib_type: str,
+                 semantic_temperature: float,
+                 use_temporal_rescore: bool,
+                 temporal_rescore_type: str,
+                 temporal_alpha: float,
+                 temporal_kernel_size: int,
                  device):
         super().__init__()
 
@@ -79,6 +127,14 @@ class CLIPVAD(nn.Module):
         self.prompt_prefix = prompt_prefix
         self.prompt_postfix = prompt_postfix
         self.device = device
+        self.score_source = score_source
+        self.use_semantic_calib = use_semantic_calib
+        self.use_temporal_rescore = use_temporal_rescore
+
+        semantic_mode = semantic_calib_type if use_semantic_calib else "identity"
+        temporal_mode = temporal_rescore_type if use_temporal_rescore else "identity"
+        self.semantic_calibration = SemanticCalibration(semantic_mode, semantic_temperature)
+        self.temporal_rescorer = TemporalRescorer(temporal_mode, temporal_alpha, temporal_kernel_size)
 
         self.temporal = Transformer(
             width=visual_width,
@@ -220,5 +276,27 @@ class CLIPVAD(nn.Module):
         text_features_norm = text_features_norm.permute(0, 2, 1)
         logits2 = visual_features_norm @ text_features_norm.type(visual_features_norm.dtype) / 0.07
 
-        return text_features_ori, logits1, logits2
+        score_1 = torch.sigmoid(logits1.squeeze(-1))
+        score_2 = torch.max(logits2, dim=-1).values
+
+        if self.score_source == "logits1_only":
+            raw_score = score_1
+        elif self.score_source == "logits2_only":
+            raw_score = score_2
+        else:
+            raw_score = 0.5 * score_1 + 0.5 * score_2
+
+        calibrated_score = self.semantic_calibration(raw_score)
+        rescored_score = self.temporal_rescorer(calibrated_score)
+
+        return {
+            "text_features_ori": text_features_ori,
+            "logits1": logits1,
+            "logits2": logits2,
+            "score_1": score_1,
+            "score_2": score_2,
+            "raw_score": raw_score,
+            "calibrated_score": calibrated_score,
+            "rescored_score": rescored_score,
+        }
     

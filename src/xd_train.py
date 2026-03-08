@@ -51,6 +51,12 @@ def train(model, train_loader, test_loader, args, label_map: dict, device):
     ap_best = 0
     epoch = 0
 
+    print("Score setup: source={} semantic={} temporal={}".format(
+        args.score_source,
+        args.semantic_calib_type if args.use_semantic_calib else "identity",
+        args.temporal_rescore_type if args.use_temporal_rescore else "identity"
+    ))
+
     if args.use_checkpoint == True:
         checkpoint = torch.load(args.checkpoint_path)
         model.load_state_dict(checkpoint['model_state_dict'])
@@ -71,9 +77,12 @@ def train(model, train_loader, test_loader, args, label_map: dict, device):
             feat_lengths = feat_lengths.to(device)
             text_labels = get_batch_label(text_labels, prompt_text, label_map).to(device)
 
-            text_features, logits1, logits2 = model(visual_feat, None, prompt_text, feat_lengths) 
+            outputs = model(visual_feat, None, prompt_text, feat_lengths)
+            text_features = outputs["text_features_ori"]
+            logits1 = outputs["logits1"]
+            logits2 = outputs["logits2"]
 
-            loss1 = CLAS2(logits1, text_labels, feat_lengths, device) 
+            loss1 = CLAS2(logits1, text_labels, feat_lengths, device)
             loss_total1 += loss1.item()
 
             loss2 = CLASM(logits2, text_labels, feat_lengths, device)
@@ -96,7 +105,7 @@ def train(model, train_loader, test_loader, args, label_map: dict, device):
                 print('epoch: ', e+1, '| step: ', step, '| loss1: ', loss_total1 / (i+1), '| loss2: ', loss_total2 / (i+1), '| loss3: ', loss3.item())
                 
         scheduler.step()
-        AUC, AP, mAP = test(model, test_loader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, device)
+        AUC, AP, mAP = test(model, test_loader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, device, args)
 
         if AP > ap_best:
             ap_best = AP 
@@ -133,5 +142,5 @@ if __name__ == '__main__':
     test_dataset = XDDataset(args.visual_length, args.test_list, True, label_map)
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-    model = CLIPVAD(args.classes_num, args.embed_dim, args.visual_length, args.visual_width, args.visual_head, args.visual_layers, args.attn_window, args.prompt_prefix, args.prompt_postfix, device)
+    model = CLIPVAD(args.classes_num, args.embed_dim, args.visual_length, args.visual_width, args.visual_head, args.visual_layers, args.attn_window, args.prompt_prefix, args.prompt_postfix, args.score_source, args.use_semantic_calib, args.semantic_calib_type, args.semantic_temperature, args.use_temporal_rescore, args.temporal_rescore_type, args.temporal_alpha, args.temporal_kernel_size, device)
     train(model, train_loader, test_loader, args, label_map, device)
