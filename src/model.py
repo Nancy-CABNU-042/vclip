@@ -1,5 +1,6 @@
 from collections import OrderedDict
 
+import os
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -130,6 +131,8 @@ class CLIPVAD(nn.Module):
         self.score_source = score_source
         self.use_semantic_calib = use_semantic_calib
         self.use_temporal_rescore = use_temporal_rescore
+        self.debug_scores = bool(int(os.environ.get("VADCLIP_DEBUG", "0")))
+        self._score_stats_logged = False
 
         semantic_mode = semantic_calib_type if use_semantic_calib else "identity"
         temporal_mode = temporal_rescore_type if use_temporal_rescore else "identity"
@@ -277,7 +280,18 @@ class CLIPVAD(nn.Module):
         logits2 = visual_features_norm @ text_features_norm.type(visual_features_norm.dtype) / 0.07
 
         score_1 = torch.sigmoid(logits1.squeeze(-1))
-        score_2 = torch.max(logits2, dim=-1).values
+        score_2 = torch.sigmoid(torch.max(logits2, dim=-1).values)
+
+        if self.debug_scores and (not self._score_stats_logged):
+            s1 = score_1.detach()
+            s2 = score_2.detach()
+            print("score_1 stats min/max/mean/std: {:.6f} {:.6f} {:.6f} {:.6f}".format(
+                s1.min().item(), s1.max().item(), s1.mean().item(), s1.std().item()
+            ))
+            print("score_2 stats min/max/mean/std: {:.6f} {:.6f} {:.6f} {:.6f}".format(
+                s2.min().item(), s2.max().item(), s2.mean().item(), s2.std().item()
+            ))
+            self._score_stats_logged = True
 
         if self.score_source == "logits1_only":
             raw_score = score_1

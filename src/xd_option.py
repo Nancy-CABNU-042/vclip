@@ -1,5 +1,16 @@
 import argparse
 
+
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    value = value.lower()
+    if value in ['true', '1', 'yes', 'y', 't']:
+        return True
+    if value in ['false', '0', 'no', 'n', 'f']:
+        return False
+    raise argparse.ArgumentTypeError('Boolean value expected.')
+
 parser = argparse.ArgumentParser(description='VadCLIP')
 parser.add_argument('--seed', default=234, type=int)
 
@@ -15,7 +26,7 @@ parser.add_argument('--classes-num', default=7, type=int)
 
 parser.add_argument('--max-epoch', default=10, type=int)
 parser.add_argument('--model-path', default='model/model_xd.pth')
-parser.add_argument('--use-checkpoint', default=False, type=bool)
+parser.add_argument('--use-checkpoint', default=False, type=str2bool)
 parser.add_argument('--checkpoint-path', default='model/checkpoint.pth')
 parser.add_argument('--batch-size', default=96, type=int)
 parser.add_argument('--train-list', default='list/xd_CLIP_rgb.csv')
@@ -30,11 +41,11 @@ parser.add_argument('--scheduler-milestones', default=[3, 6, 10])
 
 parser.add_argument('--score-source', '--score_source', default='fused', choices=['logits1_only', 'logits2_only', 'fused'])
 
-parser.add_argument('--use-semantic-calib', '--use_semantic_calib', default=False, type=bool)
+parser.add_argument('--use-semantic-calib', '--use_semantic_calib', default=False, type=str2bool)
 parser.add_argument('--semantic-calib-type', '--semantic_calib_type', default='identity', choices=['identity', 'temperature'])
 parser.add_argument('--semantic-temperature', '--semantic_temperature', default=1.0, type=float)
 
-parser.add_argument('--use-temporal-rescore', '--use_temporal_rescore', default=False, type=bool)
+parser.add_argument('--use-temporal-rescore', '--use_temporal_rescore', default=False, type=str2bool)
 parser.add_argument('--temporal-rescore-type', '--temporal_rescore_type', default='identity', choices=['identity', 'ema', 'conv1d'])
 parser.add_argument('--temporal-alpha', '--temporal_alpha', default=0.7, type=float)
 parser.add_argument('--temporal-kernel-size', '--temporal_kernel_size', default=3, type=int)

@@ -46,3 +46,27 @@ python ucf_train.py --score_source fused --use_semantic_calib True --semantic_ca
 python ucf_train.py --score_source logits1_only --use_semantic_calib False --use_temporal_rescore False
 python ucf_train.py --score_source logits2_only --use_semantic_calib False --use_temporal_rescore False
 ```
+
+
+## Targeted Fix Pass
+
+### Score Fusion Scaling Fix
+- Updated score conversion in `src/model.py` to avoid fusion domination by branch-2 scale:
+  - from: `score_2 = torch.max(logits2, dim=-1).values`
+  - to: `score_2 = torch.sigmoid(torch.max(logits2, dim=-1).values)`
+- Kept fusion formula unchanged: `raw_score = 0.5 * score_1 + 0.5 * score_2`.
+- Added optional debug-only one-time score statistics logging for both `score_1` and `score_2` (min/max/mean/std), controlled by environment variable `VADCLIP_DEBUG=1`.
+
+### Boolean Parsing Fix
+- Replaced unsafe `argparse` boolean parsing (`type=bool`) with a safe `str2bool` helper in:
+  - `src/ucf_option.py`
+  - `src/xd_option.py`
+- Applied to:
+  - `--use-checkpoint`
+  - `--use-semantic-calib` / `--use_semantic_calib`
+  - `--use-temporal-rescore` / `--use_temporal_rescore`
+
+### Example (explicit True/False)
+```bash
+python ucf_train.py --score_source fused --use_semantic_calib True --semantic_calib_type temperature --semantic_temperature 1.0 --use_temporal_rescore False
+```
