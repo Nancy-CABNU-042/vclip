@@ -11,6 +11,7 @@ def str2bool(value):
         return False
     raise argparse.ArgumentTypeError('Boolean value expected.')
 
+
 parser = argparse.ArgumentParser(description='VadCLIP')
 parser.add_argument('--seed', default=234, type=int)
 
@@ -40,6 +41,7 @@ parser.add_argument('--scheduler-rate', default=0.1)
 parser.add_argument('--scheduler-milestones', default=[4, 8])
 
 parser.add_argument('--score-source', '--score_source', default='fused', choices=['logits1_only', 'logits2_only', 'fused'])
+parser.add_argument('--fusion-alpha', '--fusion_alpha', default=0.5, type=float)
 
 parser.add_argument('--use-semantic-calib', '--use_semantic_calib', default=False, type=str2bool)
 parser.add_argument('--semantic-calib-type', '--semantic_calib_type', default='identity', choices=['identity', 'temperature'])

@@ -48,6 +48,7 @@ class TemporalRescorer(nn.Module):
             return self.conv(score_seq.unsqueeze(1)).squeeze(1)
         return score_seq
 
+
 class LayerNorm(nn.LayerNorm):
 
     def forward(self, x: torch.Tensor):
@@ -117,7 +118,8 @@ class CLIPVAD(nn.Module):
                  temporal_rescore_type: str,
                  temporal_alpha: float,
                  temporal_kernel_size: int,
-                 device):
+                 device,
+                 fusion_alpha: float = 0.5):
         super().__init__()
 
         self.num_class = num_class
@@ -129,6 +131,7 @@ class CLIPVAD(nn.Module):
         self.prompt_postfix = prompt_postfix
         self.device = device
         self.score_source = score_source
+        self.fusion_alpha = fusion_alpha
         self.use_semantic_calib = use_semantic_calib
         self.use_temporal_rescore = use_temporal_rescore
         self.debug_scores = bool(int(os.environ.get("VADCLIP_DEBUG", "0")))
@@ -181,8 +184,6 @@ class CLIPVAD(nn.Module):
         nn.init.normal_(self.frame_position_embeddings.weight, std=0.01)
 
     def build_attention_mask(self, attn_window):
-        # lazily create causal attention mask, with full attention between the vision tokens
-        # pytorch uses additive attention mask; fill with -inf
         mask = torch.empty(self.visual_length, self.visual_length)
         mask.fill_(float('-inf'))
         for i in range(int(self.visual_length / attn_window)):
@@ -195,10 +196,10 @@ class CLIPVAD(nn.Module):
 
     def adj4(self, x, seq_len):
         soft = nn.Softmax(1)
-        x2 = x.matmul(x.permute(0, 2, 1)) # B*T*T
-        x_norm = torch.norm(x, p=2, dim=2, keepdim=True)  # B*T*1
+        x2 = x.matmul(x.permute(0, 2, 1))
+        x_norm = torch.norm(x, p=2, dim=2, keepdim=True)
         x_norm_x = x_norm.matmul(x_norm.permute(0, 2, 1))
-        x2 = x2/(x_norm_x+1e-20)
+        x2 = x2 / (x_norm_x + 1e-20)
         output = torch.zeros_like(x2)
         if seq_len is None:
             for i in range(x.shape[0]):
@@ -298,7 +299,7 @@ class CLIPVAD(nn.Module):
         elif self.score_source == "logits2_only":
             raw_score = score_2
         else:
-            raw_score = 0.5 * score_1 + 0.5 * score_2
+            raw_score = self.fusion_alpha * score_1 + (1.0 - self.fusion_alpha) * score_2
 
         calibrated_score = self.semantic_calibration(raw_score)
         rescored_score = self.temporal_rescorer(calibrated_score)
@@ -313,4 +314,3 @@ class CLIPVAD(nn.Module):
             "calibrated_score": calibrated_score,
             "rescored_score": rescored_score,
         }
-    

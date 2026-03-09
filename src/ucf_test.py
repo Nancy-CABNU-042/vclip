@@ -11,10 +11,13 @@ from utils.tools import get_batch_mask, get_prompt_text
 from utils.ucf_detectionMAP import getDetectionMAP as dmAP
 import ucf_option
 
+
 def test(model, testdataloader, maxlen, prompt_text, gt, gtsegments, gtlabels, device, args):
     
     model.to(device)
     model.eval()
+
+    baseline_mode = (not args.use_semantic_calib) and (not args.use_temporal_rescore)
 
     print("Eval setup: source={} semantic={} temporal={} eval_score={}".format(
         args.score_source,
@@ -22,6 +25,7 @@ def test(model, testdataloader, maxlen, prompt_text, gt, gtsegments, gtlabels, d
         args.temporal_rescore_type if args.use_temporal_rescore else "identity",
         args.eval_score_type
     ))
+    print("mAP mode: {}".format("original" if baseline_mode else "gated_final_score"))
 
     element_logits2_stack = []
 
@@ -51,15 +55,25 @@ def test(model, testdataloader, maxlen, prompt_text, gt, gtsegments, gtlabels, d
                     lengths[j] = length
             lengths = lengths.to(int)
             padding_mask = get_batch_mask(lengths, maxlen).to(device)
+
             outputs = model(visual, padding_mask, prompt_text, lengths)
-            logits1 = outputs["logits1"].reshape(outputs["logits1"].shape[0] * outputs["logits1"].shape[1], outputs["logits1"].shape[2])
-            logits2 = outputs["logits2"].reshape(outputs["logits2"].shape[0] * outputs["logits2"].shape[1], outputs["logits2"].shape[2])
+
+            logits1 = outputs["logits1"].reshape(
+                outputs["logits1"].shape[0] * outputs["logits1"].shape[1],
+                outputs["logits1"].shape[2]
+            )
+            logits2 = outputs["logits2"].reshape(
+                outputs["logits2"].shape[0] * outputs["logits2"].shape[1],
+                outputs["logits2"].shape[2]
+            )
+
             prob2 = (1 - logits2[0:len_cur].softmax(dim=-1)[:, 0].squeeze(-1))
             prob1 = torch.sigmoid(logits1[0:len_cur].squeeze(-1))
 
             raw_score = outputs["raw_score"].reshape(-1)[:len_cur]
             calibrated_score = outputs["calibrated_score"].reshape(-1)[:len_cur]
             rescored_score = outputs["rescored_score"].reshape(-1)[:len_cur]
+
             if args.eval_score_type == "raw":
                 final_score = raw_score
             elif args.eval_score_type == "calibrated":
@@ -71,13 +85,29 @@ def test(model, testdataloader, maxlen, prompt_text, gt, gtsegments, gtlabels, d
                 ap1 = prob1
                 ap2 = prob2
                 ap_final = final_score
-                #ap3 = prob3
             else:
                 ap1 = torch.cat([ap1, prob1], dim=0)
                 ap2 = torch.cat([ap2, prob2], dim=0)
                 ap_final = torch.cat([ap_final, final_score], dim=0)
 
-            element_logits2 = logits2[0:len_cur].softmax(dim=-1).detach().cpu().numpy()
+            if baseline_mode:
+                element_logits2 = logits2[0:len_cur].softmax(dim=-1)
+            else:
+                class_probs = logits2[0:len_cur].softmax(dim=-1)
+
+                if args.eval_score_type == "raw":
+                    gate_score = raw_score
+                elif args.eval_score_type == "calibrated":
+                    gate_score = calibrated_score
+                else:
+                    gate_score = rescored_score
+
+                gate_score = gate_score.unsqueeze(-1)
+                element_logits2 = class_probs.clone()
+                element_logits2[:, 1:] = element_logits2[:, 1:] * gate_score
+                element_logits2[:, 0] = 1 - gate_score.squeeze(-1)
+
+            element_logits2 = element_logits2.detach().cpu().numpy()
             element_logits2 = np.repeat(element_logits2, 16, 0)
             element_logits2_stack.append(element_logits2)
 
@@ -105,7 +135,7 @@ def test(model, testdataloader, maxlen, prompt_text, gt, gtsegments, gtlabels, d
     for i in range(5):
         print('mAP@{0:.1f} ={1:.2f}%'.format(iou[i], dmap[i]))
         averageMAP += dmap[i]
-    averageMAP = averageMAP/(i+1)
+    averageMAP = averageMAP / (i + 1)
     print('average MAP: {:.2f}'.format(averageMAP))
 
     return ROCF, APF
@@ -115,7 +145,22 @@ if __name__ == '__main__':
     device = "cuda" if torch.cuda.is_available() else "cpu"
     args = ucf_option.parser.parse_args()
 
-    label_map = dict({'Normal': 'Normal', 'Abuse': 'Abuse', 'Arrest': 'Arrest', 'Arson': 'Arson', 'Assault': 'Assault', 'Burglary': 'Burglary', 'Explosion': 'Explosion', 'Fighting': 'Fighting', 'RoadAccidents': 'RoadAccidents', 'Robbery': 'Robbery', 'Shooting': 'Shooting', 'Shoplifting': 'Shoplifting', 'Stealing': 'Stealing', 'Vandalism': 'Vandalism'})
+    label_map = dict({
+        'Normal': 'Normal',
+        'Abuse': 'Abuse',
+        'Arrest': 'Arrest',
+        'Arson': 'Arson',
+        'Assault': 'Assault',
+        'Burglary': 'Burglary',
+        'Explosion': 'Explosion',
+        'Fighting': 'Fighting',
+        'RoadAccidents': 'RoadAccidents',
+        'Robbery': 'Robbery',
+        'Shooting': 'Shooting',
+        'Shoplifting': 'Shoplifting',
+        'Stealing': 'Stealing',
+        'Vandalism': 'Vandalism'
+    })
 
     testdataset = UCFDataset(args.visual_length, args.test_list, True, label_map)
     testdataloader = DataLoader(testdataset, batch_size=1, shuffle=False)
@@ -125,8 +170,29 @@ if __name__ == '__main__':
     gtsegments = np.load(args.gt_segment_path, allow_pickle=True)
     gtlabels = np.load(args.gt_label_path, allow_pickle=True)
 
-    model = CLIPVAD(args.classes_num, args.embed_dim, args.visual_length, args.visual_width, args.visual_head, args.visual_layers, args.attn_window, args.prompt_prefix, args.prompt_postfix, args.score_source, args.use_semantic_calib, args.semantic_calib_type, args.semantic_temperature, args.use_temporal_rescore, args.temporal_rescore_type, args.temporal_alpha, args.temporal_kernel_size, device)
+    model = CLIPVAD(
+        args.classes_num,
+        args.embed_dim,
+        args.visual_length,
+        args.visual_width,
+        args.visual_head,
+        args.visual_layers,
+        args.attn_window,
+        args.prompt_prefix,
+        args.prompt_postfix,
+        args.score_source,
+        args.use_semantic_calib,
+        args.semantic_calib_type,
+        args.semantic_temperature,
+        args.use_temporal_rescore,
+        args.temporal_rescore_type,
+        args.temporal_alpha,
+        args.temporal_kernel_size,
+        device,
+        args.fusion_alpha
+    )
+
     model_param = torch.load(args.model_path)
-    model.load_state_dict(model_param)
+    model.load_state_dict(model_param, strict=False)
 
     test(model, testdataloader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, device, args)
